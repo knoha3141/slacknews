@@ -1,179 +1,72 @@
 #!/bin/bash
 
-# SlackNews Deployment Script
-# このスクリプトはSlackNewsシステム全体をAWSにデプロイします
+# --- 設定 ---
+# スクリプト内でエラーが発生した場合、即座に終了する
+set -e
 
-set -e  # エラー時に実行を停止
+# Lambda関数名
+COLLECTOR_FUNCTION_NAME="slacknews-news-collector"
+SENDER_FUNCTION_NAME="slacknews-slack-sender"
 
-PROJECT_NAME="slacknews"
-STACK_NAME="$PROJECT_NAME-infrastructure"
+# AWSリージョン
 REGION="us-east-1"
 
-echo "🚀 SlackNews Deployment Script"
-echo "=============================="
-echo "Project: $PROJECT_NAME"
-echo "Stack: $STACK_NAME"
-echo "Region: $REGION"
-echo ""
+# ビルド用ディレクトリとZIPファイル名
+BUILD_DIR="dist"
+ZIP_FILE="deployment.zip"
 
-# 前提条件の確認
-echo "📋 前提条件を確認中..."
 
-# AWS CLI
-if ! command -v aws &> /dev/null; then
-    echo "❌ AWS CLI が見つかりません"
-    exit 1
-fi
+# --- スクリプト本体 ---
+echo "🚀 SlackNewsのデプロイを開始します..."
 
-# Node.js
-if ! command -v npm &> /dev/null; then
-    echo "❌ Node.js/npm が見つかりません"
-    exit 1
-fi
+# 1. 前回のビルド成果物をクリーンアップ
+echo "[1/5] 古いビルド成果物をクリーンアップ中..."
+rm -rf "$BUILD_DIR" "$ZIP_FILE"
+echo "✅ クリーンアップが完了しました。"
 
-# TypeScript
-if ! command -v tsc &> /dev/null; then
-    echo "❌ TypeScript が見つかりません。npm install -g typescript を実行してください"
-    exit 1
-fi
+# 2. TypeScriptをコンパイル
+echo "[2/5] TypeScriptのコンパイル中..."
+npx tsc
+echo "✅ コンパイルが完了し、'$BUILD_DIR'ディレクトリが作成されました。"
 
-echo "✅ すべての前提条件が満たされています"
-
-# AWS認証確認
-echo ""
-echo "🔐 AWS認証を確認中..."
-if ! aws sts get-caller-identity --region $REGION &> /dev/null; then
-    echo "❌ AWS認証が設定されていません"
-    echo "aws configure を実行してください"
-    exit 1
-fi
-
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-echo "✅ AWS Account: $AWS_ACCOUNT_ID"
-
-# 依存関係のインストール
-echo ""
-echo "📦 依存関係をインストール中..."
-npm install
-
-# TypeScriptコンパイル
-echo ""
-echo "🔨 TypeScriptをコンパイル中..."
-npm run build
-
-# Lambda関数のパッケージング
-echo ""
-echo "📁 Lambda関数をパッケージ中..."
-
-# 一時的なディレクトリ作成
-mkdir -p dist/packages
-
-# News Collector Lambda
-echo "  - News Collector Lambda"
-cd dist
-cp -r ../node_modules .
-rm -f packages/news-collector.zip
-zip -r packages/news-collector.zip lambdas/news-collector.js clients/ utils/ node_modules/
-aws s3 cp packages/news-collector.zip s3://slacknews-reports-390403878175/lambda-code/ --region $REGION
+# 3. 本番環境用のライブラリをビルドディレクトリにインストール
+echo "[3/5] 本番環境用のライブラリを'$BUILD_DIR'にインストール中..."
+cp package.json package-lock.json "$BUILD_DIR/"
+cd "$BUILD_DIR"
+npm install --omit=dev
 cd ..
+echo "✅ ライブラリのインストールが完了しました。"
 
-# Slack Sender Lambda  
-echo "  - Slack Sender Lambda"
-cd dist
-rm -f packages/slack-sender.zip
-zip -r packages/slack-sender.zip lambdas/slack-sender.js clients/ utils/ node_modules/
-aws s3 cp packages/slack-sender.zip s3://slacknews-reports-390403878175/lambda-code/ --region $REGION
+# 4. デプロイパッケージをZIP形式で圧縮
+echo "[4/5] '$BUILD_DIR'ディレクトリをZIPファイルに圧縮中..."
+cd "$BUILD_DIR"
+zip -r "../$ZIP_FILE" . > /dev/null # zipの進捗表示を抑制
 cd ..
+echo "✅ パッケージの圧縮が完了しました: $ZIP_FILE"
 
-echo "✅ Lambda関数のパッケージングが完了しました"
+# 5. AWS Lambdaに関数をデプロイ
+echo "[5/5] AWS Lambdaへのデプロイ中..."
 
-# CloudFormation スタックのデプロイ
-echo ""
-echo "☁️  CloudFormation スタックをデプロイ中..."
-
-aws cloudformation deploy \
-    --template-file cloudformation/slacknews-infrastructure.yaml \
-    --stack-name $STACK_NAME \
-    --parameter-overrides ProjectName=$PROJECT_NAME \
-    --capabilities CAPABILITY_NAMED_IAM \
-    --region $REGION
-
-if [ $? -eq 0 ]; then
-    echo "✅ CloudFormation スタックのデプロイが完了しました"
-else
-    echo "❌ CloudFormation スタックのデプロイに失敗しました"
-    exit 1
-fi
-
-# S3バケット名を取得
-BUCKET_NAME=$(aws cloudformation describe-stacks \
-    --stack-name $STACK_NAME \
-    --query 'Stacks[0].Outputs[?OutputKey==`ReportsBucketName`].OutputValue' \
-    --output text \
-    --region $REGION)
-
-echo "📊 S3 Bucket: $BUCKET_NAME"
-
-# Lambda関数のコード更新
-echo ""
-echo "🔄 Lambda関数のコードを更新中..."
-
-# News Collector Lambda の更新
-echo "  - News Collector Lambda"
+echo "  -> ターゲット: $COLLECTOR_FUNCTION_NAME"
 aws lambda update-function-code \
-    --function-name "$PROJECT_NAME-news-collector" \
-    --s3-bucket slacknews-reports-390403878175 \
-    --s3-key lambda-code/news-collector.zip \
-    --region $REGION
+  --function-name "$COLLECTOR_FUNCTION_NAME" \
+  --zip-file "fileb://$ZIP_FILE" \
+  --region "$REGION" \
+  --output text > /dev/null # AWS CLIの出力を抑制
 
-# 環境変数の更新
-aws lambda update-function-configuration \
-    --function-name "$PROJECT_NAME-news-collector" \
-    --environment Variables="{BUCKET_NAME=$BUCKET_NAME}" \
-    --region $REGION
-
-# Slack Sender Lambda の更新
-echo "  - Slack Sender Lambda"
+echo "  -> ターゲット: $SENDER_FUNCTION_NAME"
 aws lambda update-function-code \
-    --function-name "$PROJECT_NAME-slack-sender" \
-    --s3-bucket slacknews-reports-390403878175 \
-    --s3-key lambda-code/slack-sender.zip \
-    --region $REGION
+  --function-name "$SENDER_FUNCTION_NAME" \
+  --zip-file "fileb://$ZIP_FILE" \
+  --region "$REGION" \
+  --output text > /dev/null # AWS CLIの出力を抑制
 
-aws lambda update-function-configuration \
-    --function-name "$PROJECT_NAME-slack-sender" \
-    --environment Variables="{BUCKET_NAME=$BUCKET_NAME}" \
-    --region $REGION
+echo "✅ Lambda関数の更新が完了しました。"
 
-echo "✅ Lambda関数の更新が完了しました"
+# 6. 後片付け (ZIPファイルのみ削除)
+echo "🧹 一時ファイル ($ZIP_FILE) をクリーンアップ中..."
+rm "$ZIP_FILE"
+echo "✅ クリーンアップが完了しました。"
 
-# デプロイ完了
 echo ""
-echo "🎉 デプロイが正常に完了しました！"
-echo ""
-echo "📝 デプロイされたリソース:"
-echo "- CloudFormation Stack: $STACK_NAME"
-echo "- S3 Bucket: $BUCKET_NAME"
-echo "- Lambda Functions:"
-echo "  - $PROJECT_NAME-news-collector (23:00 JST 実行)"
-echo "  - $PROJECT_NAME-slack-sender (08:00 JST 実行)"
-echo ""
-echo "📋 次のステップ:"
-echo "1. AWS Parameter Store に必要な設定を追加:"
-echo "   ./scripts/setup-parameters.sh"
-echo ""
-echo "2. 初回テスト実行:"
-echo "   aws lambda invoke --function-name $PROJECT_NAME-news-collector output.json"
-echo "   aws lambda invoke --function-name $PROJECT_NAME-slack-sender output.json"
-echo ""
-echo "🔍 ログの確認:"
-echo "   aws logs tail /aws/lambda/$PROJECT_NAME-news-collector --follow"
-echo "   aws logs tail /aws/lambda/$PROJECT_NAME-slack-sender --follow"
-
-# クリーンアップ
-echo ""
-echo "🧹 一時ファイルをクリーンアップ中..."
-rm -rf dist/packages
-rm -rf dist/node_modules
-
-echo "✅ デプロイスクリプトが完了しました"
+echo "🎉 デプロイが正常に完了しました！ 🚀"
