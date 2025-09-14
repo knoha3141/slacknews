@@ -25,39 +25,17 @@ export class GeminiClient {
   }
 
   async generateNewsReport(): Promise<NewsReport> {
-    const prompt = `
-あなたは起業家向けのニュースキュレーターです。昨日から今日にかけての最新ニュースを調査し、起業に役立つテック、経済、ビジネス関連の重要なニュースを5-7件選んでレポートを作成してください。
+    const prompt = `起業家向けニュース3件を日本語で作成してください。
 
-重要: すべて日本語で回答してください。
+各記事:
+- タイトル: 日本語見出し
+- カテゴリー: tech/business/economy
+- 要約: 200文字の日本語要約
+- 重要度: 1-5
+- URL: https://techcrunch.com/
 
-各ニュースには以下の情報を含めてください：
-- タイトル: 日本語のニュース見出し
-- カテゴリー: tech、business、economyのいずれか
-- 詳細情報: 500文字以上の詳しい日本語要約と起業家への影響分析
-- 重要度: 1-5の数値（5が最重要）
-- ソースURL: 実在する信頼できるニュースソースの正確なURL（TechCrunch、Bloomberg、Reuters、日経、Forbes等の実際の記事URL）
-
-対象となるニュースソース：
-- TechCrunch, Bloomberg, Reuters, 日経新聞, VentureBeat, Harvard Business Review, MIT Technology Review, Forbes
-
-注意: 
-- ソースURLは必ず実在する記事のURLを提供してください。架空のURLは使用しないでください。
-- JSONにはコメント（//）を一切含めないでください。
-- 純粋なJSONのみを返してください。
-
-以下のJSON形式で日本語で回答してください（コメント禁止）：
-{
-  "articles": [
-    {
-      "title": "日本語のニュースタイトル",
-      "category": "tech",
-      "summary": "500文字以上の日本語での詳細な要約と分析...",
-      "importance": 4,
-      "sourceUrl": "https://techcrunch.com/2024/09/12/actual-article-url"
-    }
-  ]
-}
-`;
+JSON形式のみで回答:
+{"articles":[{"title":"日本語タイトル","category":"tech","summary":"200文字要約","importance":4,"sourceUrl":"https://techcrunch.com/"}]}`;
 
     try {
       const result = await this.model.generateContent(prompt);
@@ -118,6 +96,96 @@ export class GeminiClient {
       } catch (parseError) {
         console.error('JSON Parse Error:', parseError);
         console.error('Problematic JSON:', jsonString.substring(0, 1000));
+        
+        // フォールバック: より堅牢なJSON修復
+        try {
+          console.log('Attempting advanced JSON repair...');
+          
+          // 完全な記事の境界を探す
+          const articles = [];
+          let currentPos = 0;
+          
+          // "title" でスタートする記事を探す
+          while (true) {
+            const titlePos = jsonString.indexOf('"title":', currentPos);
+            if (titlePos === -1) break;
+            
+            // この記事の開始位置を見つける
+            let articleStart = titlePos;
+            while (articleStart > 0 && jsonString[articleStart] !== '{') {
+              articleStart--;
+            }
+            
+            // この記事の終了位置を見つける
+            let braceCount = 0;
+            let articleEnd = articleStart;
+            let inString = false;
+            let escape = false;
+            
+            for (let i = articleStart; i < jsonString.length; i++) {
+              const char = jsonString[i];
+              
+              if (escape) {
+                escape = false;
+                continue;
+              }
+              
+              if (char === '\\') {
+                escape = true;
+                continue;
+              }
+              
+              if (char === '"') {
+                inString = !inString;
+                continue;
+              }
+              
+              if (!inString) {
+                if (char === '{') braceCount++;
+                if (char === '}') braceCount--;
+                
+                if (braceCount === 0) {
+                  articleEnd = i;
+                  break;
+                }
+              }
+            }
+            
+            // 完全な記事を抽出
+            if (braceCount === 0) {
+              const articleJson = jsonString.substring(articleStart, articleEnd + 1);
+              try {
+                const article = JSON.parse(articleJson);
+                if (article.title && article.category && article.summary) {
+                  // 不完全なURLを修正
+                  if (!article.sourceUrl || article.sourceUrl === 'https:' || article.sourceUrl.length < 10) {
+                    article.sourceUrl = 'https://techcrunch.com/';
+                  }
+                  articles.push(article);
+                }
+              } catch (e) {
+                console.log('Failed to parse article, skipping...');
+              }
+            }
+            
+            currentPos = articleEnd + 1;
+            if (articles.length >= 5) break; // 最大5記事まで
+          }
+          
+          if (articles.length > 0) {
+            console.log(`JSON repair successful, extracted ${articles.length} articles`);
+            
+            return {
+              date: new Date().toISOString().split('T')[0],
+              articles: articles,
+              totalCount: articles.length,
+              generatedAt: new Date().toISOString()
+            };
+          }
+        } catch (repairError) {
+          console.error('JSON repair failed:', repairError);
+        }
+        
         throw new Error(`JSON parse failed: ${parseError.message}`);
       }
     } catch (error) {

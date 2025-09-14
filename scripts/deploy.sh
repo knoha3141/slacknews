@@ -72,13 +72,17 @@ mkdir -p dist/packages
 echo "  - News Collector Lambda"
 cd dist
 cp -r ../node_modules .
+rm -f packages/news-collector.zip
 zip -r packages/news-collector.zip lambdas/news-collector.js clients/ utils/ node_modules/
+aws s3 cp packages/news-collector.zip s3://slacknews-reports-390403878175/lambda-code/ --region $REGION
 cd ..
 
-# Slack Sender Lambda
+# Slack Sender Lambda  
 echo "  - Slack Sender Lambda"
 cd dist
+rm -f packages/slack-sender.zip
 zip -r packages/slack-sender.zip lambdas/slack-sender.js clients/ utils/ node_modules/
+aws s3 cp packages/slack-sender.zip s3://slacknews-reports-390403878175/lambda-code/ --region $REGION
 cd ..
 
 echo "✅ Lambda関数のパッケージングが完了しました"
@@ -118,7 +122,8 @@ echo "🔄 Lambda関数のコードを更新中..."
 echo "  - News Collector Lambda"
 aws lambda update-function-code \
     --function-name "$PROJECT_NAME-news-collector" \
-    --zip-file fileb://dist/packages/news-collector.zip \
+    --s3-bucket slacknews-reports-390403878175 \
+    --s3-key lambda-code/news-collector.zip \
     --region $REGION
 
 # 環境変数の更新
@@ -131,7 +136,8 @@ aws lambda update-function-configuration \
 echo "  - Slack Sender Lambda"
 aws lambda update-function-code \
     --function-name "$PROJECT_NAME-slack-sender" \
-    --zip-file fileb://dist/packages/slack-sender.zip \
+    --s3-bucket slacknews-reports-390403878175 \
+    --s3-key lambda-code/slack-sender.zip \
     --region $REGION
 
 aws lambda update-function-configuration \
