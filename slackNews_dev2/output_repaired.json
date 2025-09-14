@@ -1,0 +1,1 @@
+{"statusCode":500,"body":"{\"message\":\"News collection failed\",\"error\":\"Failed to generate news report: Error: JSON parse failed: Unexpected token t in JSON at position 697\"}"}
