@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'SlackNews - Daily AI-powered news aggregator infrastructure'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: slacknews
+    Description: Project name for resource naming
+
+Resources:
+  # S3 Bucket for storing news reports
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ProjectName}-reports-${AWS::AccountId}'
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldReports
+            Status: Enabled
+            ExpirationInDays: 30
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # IAM Role for Lambda functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ParameterStoreAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/slacknews/*'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub 'arn:aws:s3:::${ReportsBucket}/*'
+
+  # News Collector Lambda Function
+  NewsCollectorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-news-collector'
+      Runtime: nodejs18.x
+      Handler: news-collector.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 900  # 15分（Gemini API呼び出しに時間がかかる可能性）
+      MemorySize: 512
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ReportsBucket
+      Code:
+        ZipFile: |
+          // Placeholder code - will be replaced during deployment
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Function not deployed yet' })
+            };
+          };
+
+  # Slack Sender Lambda Function
+  SlackSenderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-slack-sender'
+      Runtime: nodejs18.x
+      Handler: slack-sender.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 300  # 5分
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref ReportsBucket
+      Code:
+        ZipFile: |
+          // Placeholder code - will be replaced during deployment
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({ message: 'Function not deployed yet' })
+            };
+          };
+
+  # EventBridge Rule for News Collection (23:00 JST = 14:00 UTC)
+  NewsCollectionSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-news-collection'
+      Description: 'Trigger news collection at 23:00 JST daily'
+      ScheduleExpression: 'cron(0 14 * * ? *)'  # 14:00 UTC = 23:00 JST
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt NewsCollectorFunction.Arn
+          Id: 'NewsCollectorTarget'
+
+  # Permission for EventBridge to invoke News Collector
+  NewsCollectionSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref NewsCollectorFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt NewsCollectionSchedule.Arn
+
+  # EventBridge Rule for Slack Sending (08:00 JST = 23:00 UTC previous day)
+  SlackSendingSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-slack-sending'
+      Description: 'Send news report to Slack at 08:00 JST daily'
+      ScheduleExpression: 'cron(0 23 * * ? *)'  # 23:00 UTC = 08:00 JST next day
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SlackSenderFunction.Arn
+          Id: 'SlackSenderTarget'
+
+  # Permission for EventBridge to invoke Slack Sender
+  SlackSendingSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlackSenderFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SlackSendingSchedule.Arn
+
+Outputs:
+  ReportsBucketName:
+    Description: 'S3 bucket name for storing reports'
+    Value: !Ref ReportsBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ReportsBucket'
+
+  NewsCollectorFunctionArn:
+    Description: 'ARN of News Collector Lambda function'
+    Value: !GetAtt NewsCollectorFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-NewsCollectorFunction'
+
+  SlackSenderFunctionArn:
+    Description: 'ARN of Slack Sender Lambda function'
+    Value: !GetAtt SlackSenderFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SlackSenderFunction'
+
+  LambdaExecutionRoleArn:
+    Description: 'ARN of Lambda execution role'
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaRole'
